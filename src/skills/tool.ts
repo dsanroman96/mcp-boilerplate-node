@@ -55,7 +55,6 @@ export const createViewSkillToolFactory =
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
-          openWorldHint: true,
         },
       },
       fn: async ({
