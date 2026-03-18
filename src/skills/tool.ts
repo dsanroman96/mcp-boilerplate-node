@@ -52,6 +52,11 @@ export const createViewSkillToolFactory =
         }`,
         inputSchema: zViewSkillInputSchema,
         outputSchema: zViewSkillOutputSchema,
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
       fn: async ({
         skill_name: name,
