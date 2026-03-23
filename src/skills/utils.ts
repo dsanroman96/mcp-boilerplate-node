@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import Path from 'node:path';
 import type { Octokit } from '@octokit/rest';
@@ -355,6 +356,51 @@ export const skillVisible = (name: string, flags: SkillsFlags): boolean => {
   return true;
 };
 
+/** Base class for skills API errors; catch in tool.ts to format recovery messages. */
+export class SkillsApiError extends Error {}
+
+export class SkillNotFoundError extends SkillsApiError {
+  constructor(public readonly skillName: string) {
+    super(`Skill not found: ${skillName}.`);
+  }
+}
+
+export class PathNotFoundError extends SkillsApiError {
+  constructor(
+    public readonly skill: string,
+    public readonly path: string,
+    public readonly listing: string,
+  ) {
+    super(`Path not found: ${path}.`);
+  }
+}
+
+export class InvalidPathError extends SkillsApiError {
+  constructor(public readonly path: string) {
+    super(`Invalid path: ${path}.`);
+  }
+}
+
+/** Comma-separated visible skill names for error/recovery messages. */
+export const getAvailableSkillNames = async ({
+  octokit,
+  flags = {},
+}: {
+  octokit?: Octokit | null;
+  flags?: SkillsFlags;
+}): Promise<string> => {
+  try {
+    const skills = await loadSkills({ octokit, force: false });
+    const names = [...skills.values()]
+      .filter((s) => skillVisible(s.name, flags))
+      .map((s) => s.name)
+      .sort();
+    return names.length > 0 ? names.join(', ') : '(none)';
+  } catch (err) {
+    throw new Error(`getAvailableSkillNames failed: ${(err as Error).message}`);
+  }
+};
+
 export const listSkills = async ({
   octokit,
   flags = {},
@@ -391,7 +437,7 @@ export const viewSkillContent = async ({
 }): Promise<string> => {
   const skill = await resolveSkill({ octokit, flags, name });
   if (!skill) {
-    throw new Error(`Skill not found: ${name}`);
+    throw new SkillNotFoundError(name);
   }
 
   const targetPath = passedPath || 'SKILL.md';
@@ -400,7 +446,6 @@ export const viewSkillContent = async ({
   if (cached) {
     return cached;
   }
-
   const content = await getSkillContent({ octokit, skill, path: targetPath });
   skillContentCache.set(cacheKey, content);
   return content;
@@ -418,7 +463,7 @@ const normalizeSkillPath = (path: string): string => {
     normalizedPath.split('/').some((s) => s === '..') ||
     normalizedPath.includes('\0')
   ) {
-    throw new Error(`Invalid path: ${path}`);
+    throw new InvalidPathError(path);
   }
   return normalizedPath;
 };
@@ -438,12 +483,25 @@ const getSkillContent = async ({
       const root = Path.resolve(skill.path);
       const target = Path.resolve(Path.join(root, normalizedPath));
       if (targetPath !== '.' && !target.startsWith(root)) {
-        throw new Error(`Invalid path: ${targetPath}`);
+        throw new InvalidPathError(targetPath);
       }
-      const s = await stat(target).catch(() => {
-        throw new Error(`Path not found: ${targetPath}`);
-      });
-      if (s.isDirectory()) {
+      let stats: Stats;
+      try {
+        stats = await stat(target);
+      } catch {
+        const entries = await readdir(root, { withFileTypes: true }).catch(
+          () => [],
+        );
+        const listing = entries
+          .map((entry) => `${entry.isDirectory() ? '📁' : '📄'} ${entry.name}`)
+          .join('\n');
+        throw new PathNotFoundError(
+          skill.name,
+          targetPath,
+          listing || '(empty)',
+        );
+      }
+      if (stats.isDirectory()) {
         const entries = await readdir(target, {
           withFileTypes: true,
         });
@@ -453,7 +511,7 @@ const getSkillContent = async ({
           })
           .join('\n');
         return `Directory listing for ${skill.name}/${normalizedPath}:\n${listing}`;
-      } else if (s.isFile()) {
+      } else if (stats.isFile()) {
         return await readFile(target, 'utf-8');
       } else {
         throw new Error(`Unsupported file type at path: ${target}`);
@@ -505,11 +563,9 @@ This tool provides access to domain-specific skills - structured knowledge and p
 
 ## How to Use Skills
 
-1. **Discover**: If you have not been provided the list of skills, fetch them by invoking this tool with \`name: "."\`
-2. **Read**: Access a skill by reading its SKILL.md file: \`name: "skill-name", path: "SKILL.md"\`
-3. **Explore**: Navigate within the skill directory to find additional resources, examples, or templates.
-   The SKILL.md file and other documents may contain relative links to guide you.
-   You can list the content of directories by specifying the directory path, relative to the skill root.
+1. **Discover**: If you have not been provided the list of skills, fetch them by invoking this tool with \`name: "."\`. Use only skill names that appear in that list.
+2. **Read**: Access a skill by reading its SKILL.md file: \`name: "skill-name", path: "SKILL.md"\`. Use a skill name from the list (step 1); do not guess names from context or topic words.
+3. **Explore**: Navigate within the skill directory to find additional resources, examples, or templates. You can list the contents of the directory by using \`path: "."\` (relative to the skill root); use only a path that appears in that listing—do not guess or infer path names from skill descriptions or topic words (e.g. "indexing strategies" in text is not a path). SKILL.md and other documents may contain relative links to guide you.
 4. **Apply**: Follow the procedures and reference the knowledge in the skill to complete your task
 
 ## Skill Structure
